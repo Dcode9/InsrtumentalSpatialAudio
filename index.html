@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Spatial Stem Player</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg: #0b0e14; --panel: #121826; --accent: #6ee7b7; --text: #d1d5db; --muted:#94a3b8; }
+    * { box-sizing: border-box; }
+    body { margin:0; background: linear-gradient(180deg, #0b0e14, #0a0f1d 60%, #091324); color: var(--text); font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    header { padding: 14px 18px; display:flex; gap:14px; align-items:center; justify-content:space-between; background: rgba(0,0,0,0.25); backdrop-filter: blur(8px); position:sticky; top:0; z-index:10; border-bottom:1px solid #1f2937; }
+    header .title { font-weight:700; letter-spacing:0.3px; }
+    header .subtitle { color: var(--muted); font-size:12px; }
+    .left { display:flex; align-items:center; gap:12px; }
+    .right { display:flex; align-items:center; gap:10px; }
+    button, label.btn, .pill {
+      background: #0f172a; color: var(--text); border:1px solid #1f2937; border-radius: 10px; padding: 8px 12px; cursor:pointer; transition:0.2s;
+    }
+    button:hover, label.btn:hover { border-color:#334155; transform: translateY(-1px); }
+    button.primary { background: #0d1b2a; border-color:#1e293b; }
+    button.accent { background: #052e2b; color:#a7f3d0; border-color:#134e4a; }
+    input[type="range"] { width:100%; }
+    .layout { display:grid; grid-template-columns: 320px 1fr 320px; gap:12px; padding:12px; height: calc(100vh - 58px); }
+    .panel { background: rgba(8,12,22,0.7); border:1px solid #101827; border-radius: 14px; padding:12px; overflow:auto; }
+    .panel h3 { margin:10px 0 8px; font-size:14px; color:#cbd5e1; }
+    .upload { display:grid; gap:10px; }
+    .dropzone { border:1px dashed #334155; border-radius:12px; padding:14px; text-align:center; color:#94a3b8; }
+    .controls { display:grid; gap:10px; }
+    .stem { display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center; padding:8px; border:1px solid #1f2937; border-radius:10px; }
+    .stem-name { font-weight:600; color:#e2e8f0; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap: wrap; }
+    .small { font-size:12px; color:#9ca3af; }
+    #scene { width:100%; height:100%; border-radius:12px; overflow:hidden; }
+    .footer { position:absolute; bottom:8px; left:50%; transform: translateX(-50%); background: rgba(0,0,0,0.35); padding:6px 10px; border:1px solid #1f2937; border-radius:10px; font-size:12px; color:#94a3b8; }
+    .legend { display:flex; gap:8px; flex-wrap:wrap; }
+    .dot { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; }
+    .seek { display:flex; align-items:center; gap:8px; }
+    .hidden { display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="left">
+      <div>
+        <div class="title">Spatial Stem Player</div>
+        <div class="subtitle">Split • Place • Play</div>
+      </div>
+    </div>
+    <div class="right">
+      <button id="playPause" class="accent">Play</button>
+      <div class="seek">
+        <span class="small" id="cur">0:00</span>
+        <input type="range" id="seek" min="0" max="1000" value="0" />
+        <span class="small" id="dur">0:00</span>
+      </div>
+      <button id="stop">Stop</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- Left Panel: Upload & API -->
+    <div class="panel">
+      <h3>Source and API</h3>
+      <div class="upload">
+        <label class="btn">
+          <input type="file" id="file" accept="audio/*" class="hidden" />
+          Choose audio file
+        </label>
+        <div class="dropzone" id="drop">Drop audio here or click above</div>
+        <div class="row">
+          <label class="small">API base</label>
+          <input id="apiBase" class="pill" style="flex:1" value="http://localhost:5000" />
+        </div>
+        <button id="split" class="primary">Split instruments</button>
+        <div class="small" id="status">Idle</div>
+      </div>
+
+      <h3>Stem mapping</h3>
+      <div class="small">Map filenames to roles if your API returns different names.</div>
+      <div id="mapping" class="controls"></div>
+
+      <h3>Master</h3>
+      <div class="controls">
+        <div class="row">
+          <label class="small" style="width:70px">Volume</label>
+          <input type="range" id="masterVol" min="0" max="1" step="0.01" value="0.9" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Middle: 3D Scene -->
+    <div class="panel" style="position:relative;">
+      <div id="scene"></div>
+      <div class="footer">Drag colored nodes around the globe to move instruments. Center sphere pulses to audio.</div>
+    </div>
+
+    <!-- Right: Stems & Mixer -->
+    <div class="panel">
+      <h3>Stems</h3>
+      <div id="stems"></div>
+
+      <h3>Legend</h3>
+      <div class="legend" id="legend"></div>
+
+      <h3>Analysis</h3>
+      <div class="small" id="analysis">RMS: 0.00 | Peak: 0.00</div>
+    </div>
+  </div>
+
+  <!-- Libraries -->
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://unpkg.com/fflate/umd/index.js"></script>
+
+  <script>
+    // ---------- Configuration ----------
+    const DEFAULT_ROLE_COLORS = {
+      vocals: '#f472b6',
+      drums:  '#60a5fa',
+      bass:   '#34d399',
+      piano:  '#fbbf24',
+      guitar: '#a78bfa',
+      other:  '#94a3b8'
+    };
+
+    const EXPECTED_FILES = [
+      'vocals', 'drums', 'bass', 'piano', 'guitar', 'other'
+    ];
+
+    // ---------- State ----------
+    let audioCtx, masterGain, analyser, startTime = 0, isPlaying = false, pausedAt = 0, duration = 0;
+    const stems = new Map(); // role -> { buffer, source, gain, panner, mesh, color, filename }
+    let fileBlob = null;
+    let scene, camera, renderer, controls, globe, emitter, clock;
+    let drag = { active: false, picked: null, offset: new THREE.Vector3() };
+    let analyserData;
+
+    // ---------- UI Helpers ----------
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status'), stemsEl = $('stems'), legendEl = $('legend'), mappingEl = $('mapping');
+    function setStatus(msg) { statusEl.textContent = msg; }
+    function fmtTime(sec) {
+      const s = Math.max(0, Math.floor(sec));
+      const m = Math.floor(s / 60);
+      const r = s % 60;
+      return `${m}:${r.toString().padStart(2,'0')}`;
+    }
+
+    // ---------- Audio Init ----------
+    function ensureAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        masterGain = audioCtx.createGain();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyserData = new Float32Array(analyser.fftSize);
+        masterGain.connect(analyser);
+        analyser.connect(audioCtx.destination);
+      }
+    }
+
+    // ---------- 3D Init ----------
+    function init3D() {
+      const container = $('scene');
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(container.clientWidth, container.clientHeight);
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      container.appendChild(renderer.domElement);
+
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x0a0f1d);
+      camera = new THREE.PerspectiveCamera(55, container.clientWidth / container.clientHeight, 0.1, 100);
+      camera.position.set(0, 1.5, 3.2);
+
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x223344, 0.8);
+      scene.add(hemi);
+      const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+      dir.position.set(3, 5, 2);
+      scene.add(dir);
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      // Globe
+      const globeGeo = new THREE.SphereGeometry(1.2, 64, 64);
+      const globeMat = new THREE.MeshStandardMaterial({
+        color: 0x0b1a2c, emissive: 0x10223a, roughness: 0.9, metalness: 0.1, wireframe: true, opacity: 0.35, transparent: true
+      });
+      globe = new THREE.Mesh(globeGeo, globeMat);
+      scene.add(globe);
+
+      // Emitter sphere in center
+      const emitterGeo = new THREE.SphereGeometry(0.18, 32, 32);
+      const emitterMat = new THREE.MeshStandardMaterial({ color: 0x6ee7b7, emissive: 0x0b4d46, emissiveIntensity: 0.6, metalness: 0.2, roughness: 0.3 });
+      emitter = new THREE.Mesh(emitterGeo, emitterMat);
+      scene.add(emitter);
+
+      clock = new THREE.Clock();
+
+      window.addEventListener('resize', onResize);
+      renderer.domElement.addEventListener('pointerdown', onPointerDown);
+      renderer.domElement.addEventListener('pointermove', onPointerMove);
+      renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+      animate();
+    }
+
+    function onResize() {
+      const container = $('scene');
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    }
+
+    // ---------- Draggable instrument nodes ----------
+    function addInstrumentNode(role, color) {
+      const geo = new THREE.SphereGeometry(0.07, 24, 24);
+      const mat = new THREE.MeshStandardMaterial({ color: new THREE.Color(color), emissive: new THREE.Color(color).multiplyScalar(0.25) });
+      const mesh = new THREE.Mesh(geo, mat);
+      // place on globe at random lat/long
+      const phi = Math.acos(2 * Math.random() - 1);
+      const theta = 2 * Math.PI * Math.random();
+      const r = 1.2;
+      mesh.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi),
+        r * Math.sin(phi) * Math.sin(theta)
+      );
+      mesh.userData.role = role;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    function screenToSphereRay(event) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+      const mouse = new THREE.Vector2(x, y);
+      const raycaster = new THREE.Raycaster();
+      raycaster.setFromCamera(mouse, camera);
+      return raycaster;
+    }
+
+    function onPointerDown(e) {
+      const ray = screenToSphereRay(e);
+      const instMeshes = Array.from(stems.values()).map(s => s.mesh).filter(Boolean);
+      const hits = ray.intersectObjects(instMeshes, true);
+      if (hits.length) {
+        drag.active = true;
+        drag.picked = hits[0].object;
+        controls.enabled = false;
+      }
+    }
+
+    function onPointerMove(e) {
+      if (!drag.active || !drag.picked) return;
+      const ray = screenToSphereRay(e);
+      // Project onto sphere surface of radius 1.2
+      const sphere = new THREE.Sphere(new THREE.Vector3(0,0,0), 1.2);
+      const pt = new THREE.Vector3();
+      const ok = ray.ray.intersectSphere(sphere, pt);
+      if (ok) {
+        drag.picked.position.copy(pt);
+        const role = drag.picked.userData.role;
+        const s = stems.get(role);
+        if (s?.panner) {
+          // Map 3D to WebAudio coordinates; keep scale modest
+          s.panner.positionX.value = pt.x;
+          s.panner.positionY.value = pt.y;
+          s.panner.positionZ.value = pt.z;
+        }
+      }
+    }
+
+    function onPointerUp() {
+      drag.active = false;
+      drag.picked = null;
+      controls.enabled = true;
+    }
+
+    // ---------- Render loop ----------
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+
+      // Pulse emitter based on analyser RMS
+      if (analyser) {
+        analyser.getFloatTimeDomainData(analyserData);
+        let sum = 0; for (let i = 0; i < analyserData.length; i++) sum += analyserData[i] * analyserData[i];
+        const rms = Math.sqrt(sum / analyserData.length);
+        const peak = Math.max(...analyserData.map(Math.abs));
+        const scale = 1 + rms * 2.2;
+        emitter.scale.setScalar(scale);
+        $('analysis').textContent = `RMS: ${rms.toFixed(2)} | Peak: ${peak.toFixed(2)}`;
+      }
+
+      // Gentle emitter rotation
+      const t = clock.getElapsedTime();
+      emitter.rotation.y = t * 0.6;
+      globe.rotation.y = t * 0.05;
+
+      renderer.render(scene, camera);
+      // Update seek UI
+      if (isPlaying && duration > 0 && audioCtx) {
+        const now = (audioCtx.currentTime - startTime);
+        $('cur').textContent = fmtTime(now);
+        $('seek').value = Math.min(1000, Math.floor((now / duration) * 1000));
+      }
+    }
+
+    // ---------- Stems & WebAudio ----------
+    function createStemNodes(role, color) {
+      const gain = audioCtx.createGain();
+      const panner = new PannerNode(audioCtx, {
+        panningModel: 'HRTF',
+        distanceModel: 'inverse',
+        positionX: 0, positionY: 0, positionZ: 0,
+        refDistance: 0.8, maxDistance: 10, rolloffFactor: 1.0
+      });
+      gain.connect(panner).connect(masterGain);
+      return { gain, panner, color };
+    }
+
+    function connectSource(role, buffer) {
+      const stem = stems.get(role);
+      if (!stem) return;
+      const src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(stem.gain);
+      stem.source = src;
+      src.onended = () => { /* optional: handle end */ };
+    }
+
+    function startAll(offset = 0) {
+      if (isPlaying) return;
+      ensureAudio();
+      const now = audioCtx.currentTime;
+      startTime = now - offset;
+      stems.forEach((s) => {
+        if (!s.buffer) return;
+        connectSource(s.role, s.buffer);
+        s.source.start(0, offset);
+      });
+      isPlaying = true;
+      $('playPause').textContent = 'Pause';
+    }
+
+    function stopAll() {
+      stems.forEach((s) => { try { s.source?.stop(); } catch(_){} s.source = null; });
+      isPlaying = false;
+      $('playPause').textContent = 'Play';
+    }
+
+    function pauseAll() {
+      if (!isPlaying) return;
+      const now = audioCtx.currentTime;
+      pausedAt = now - startTime;
+      stopAll();
+    }
+
+    function seekTo(norm) {
+      const target = duration * norm;
+      const wasPlaying = isPlaying;
+      stopAll();
+      if (wasPlaying) startAll(target);
+      else pausedAt = target;
+      $('cur').textContent = fmtTime(target);
+    }
+
+    // ---------- UI Builders ----------
+    function buildStemUI() {
+      stemsEl.innerHTML = '';
+      legendEl.innerHTML = '';
+      stems.forEach(s => {
+        // mixer item
+        const wrap = document.createElement('div'); wrap.className = 'stem';
+        const left = document.createElement('div');
+        const name = document.createElement('div'); name.className = 'stem-name'; name.textContent = s.role;
+        const volRow = document.createElement('div'); volRow.className = 'row';
+        const volLab = document.createElement('div'); volLab.className = 'small'; volLab.textContent = 'Vol';
+        const vol = document.createElement('input'); vol.type = 'range'; vol.min = 0; vol.max = 1; vol.step = 0.01; vol.value = 0.9;
+        vol.addEventListener('input', () => s.gain.gain.value = Number(vol.value));
+        volRow.appendChild(volLab); volRow.appendChild(vol);
+        left.appendChild(name); left.appendChild(volRow);
+
+        const right = document.createElement('div'); right.className = 'row';
+        const mute = document.createElement('button'); mute.textContent = 'Mute';
+        const solo = document.createElement('button'); solo.textContent = 'Solo';
+        mute.addEventListener('click', () => {
+          const v = s.gain.gain.value > 0 ? 0 : 0.9; s.gain.gain.value = v; mute.textContent = v === 0 ? 'Unmute' : 'Mute';
+        });
+        solo.addEventListener('click', () => {
+          const anyMuted = Array.from(stems.values()).some(x => x !== s && x.gain.gain.value < 0.01);
+          if (anyMuted) {
+            // un-solo
+            stems.forEach(x => { if (x !== s) x.gain.gain.value = 0.9; });
+          } else {
+            stems.forEach(x => { if (x !== s) x.gain.gain.value = 0; });
+            s.gain.gain.value = 0.9;
+          }
+        });
+        right.appendChild(mute); right.appendChild(solo);
+
+        wrap.appendChild(left); wrap.appendChild(right);
+        stemsEl.appendChild(wrap);
+
+        // legend
+        const tag = document.createElement('div'); tag.className = 'row small';
+        const dot = document.createElement('span'); dot.className = 'dot'; dot.style.background = s.color;
+        const lbl = document.createElement('span'); lbl.textContent = s.role;
+        tag.appendChild(dot); tag.appendChild(lbl);
+        legendEl.appendChild(tag);
+      });
+    }
+
+    function buildMappingUI(files) {
+      mappingEl.innerHTML = '';
+      files.forEach((fname) => {
+        const row = document.createElement('div'); row.className = 'row';
+        const lab = document.createElement('div'); lab.className = 'small'; lab.textContent = fname;
+        const sel = document.createElement('select'); sel.className = 'pill';
+        EXPECTED_FILES.forEach(role => {
+          const opt = document.createElement('option'); opt.value = role; opt.textContent = role;
+          if (fname.toLowerCase().includes(role)) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.dataset.filename = fname;
+        row.appendChild(lab); row.appendChild(sel);
+        mappingEl.appendChild(row);
+      });
+    }
+
+    // ---------- File & API ----------
+    $('file').addEventListener('change', e => fileBlob = e.target.files[0]);
+    const drop = $('drop');
+    drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.borderColor = '#6ee7b7'; });
+    drop.addEventListener('dragleave', () => drop.style.borderColor = '#334155');
+    drop.addEventListener('drop', (e) => {
+      e.preventDefault(); drop.style.borderColor = '#334155';
+      if (e.dataTransfer.files?.length) {
+        fileBlob = e.dataTransfer.files[0];
+      }
+    });
+
+    $('split').addEventListener('click', async () => {
+      if (!fileBlob) { setStatus('Please choose an audio file first.'); return; }
+      const API_BASE = $('apiBase').value.trim().replace(/\/+$/, '');
+      try {
+        setStatus('Uploading to split…');
+        const form = new FormData();
+        form.append('file', fileBlob, fileBlob.name);
+        const res = await fetch(API_BASE + '/separate', { method: 'POST', body: form });
+        if (!res.ok) throw new Error('Split API error');
+        const zipBuf = new Uint8Array(await res.arrayBuffer());
+        setStatus('Unpacking stems…');
+        const files = await unzip(zipBuf);
+        const names = Object.keys(files);
+        if (names.length === 0) throw new Error('ZIP contains no files');
+        buildMappingUI(names);
+
+        // Decode all stems per mapping
+        ensureAudio();
+        // Clear prior stems/scene nodes
+        stems.forEach(s => { try { s.source?.stop(); } catch(_){} if (s.mesh) scene.remove(s.mesh); });
+        stems.clear();
+
+        // Prepare decoding
+        const roleBuffers = [];
+        for (const fname of names) {
+          const bytes = files[fname];
+          const role = selectedRoleForFilename(fname);
+          const color = DEFAULT_ROLE_COLORS[role] || '#94a3b8';
+          const audioBuf = await audioCtx.decodeAudioData(bytes.buffer);
+          roleBuffers.push({ role, color, buffer: audioBuf, filename: fname });
+        }
+
+        // Determine duration by max buffer duration
+        duration = Math.max(...roleBuffers.map(x => x.buffer.duration));
+
+        // Create nodes and meshes
+        for (const rb of roleBuffers) {
+          const nodes = createStemNodes(rb.role, rb.color);
+          const mesh = addInstrumentNode(rb.role, rb.color);
+          // initial audio position mapped to mesh
+          nodes.panner.positionX.value = mesh.position.x;
+          nodes.panner.positionY.value = mesh.position.y;
+          nodes.panner.positionZ.value = mesh.position.z;
+          stems.set(rb.role, { ...rb, ...nodes, mesh });
+          stems.get(rb.role).role = rb.role;
+        }
+
+        // UI
+        buildStemUI();
+        $('dur').textContent = fmtTime(duration);
+        $('seek').value = 0;
+        $('cur').textContent = '0:00';
+        setStatus('Ready. Press Play.');
+
+      } catch (err) {
+        console.error(err);
+        setStatus('Error: ' + err.message);
+      }
+    });
+
+    function selectedRoleForFilename(fname) {
+      const selects = mappingEl.querySelectorAll('select');
+      for (const s of selects) {
+        if (s.dataset.filename === fname) return s.value;
+      }
+      // fallback guess
+      const low = fname.toLowerCase();
+      for (const r of EXPECTED_FILES) if (low.includes(r)) return r;
+      return 'other';
+    }
+
+    // unzip helper with fflate
+    async function unzip(u8) {
+      return new Promise((resolve, reject) => {
+        fflate.unzip(u8, { filter: () => true }, (err, data) => {
+          if (err) return reject(err);
+          const out = {};
+          const names = Object.keys(data);
+          let pending = names.length;
+          if (!pending) resolve(out);
+          names.forEach(name => {
+            data[name].ondata = () => {};
+            data[name].onend = (buf) => {
+              out[name] = new Uint8Array(buf);
+              if (--pending === 0) resolve(out);
+            };
+          });
+        });
+      });
+    }
+
+    // ---------- Transport ----------
+    $('playPause').addEventListener('click', async () => {
+      ensureAudio();
+      if (!isPlaying) {
+        startAll(pausedAt);
+      } else {
+        pauseAll();
+      }
+    });
+
+    $('stop').addEventListener('click', () => {
+      pausedAt = 0; stopAll(); $('cur').textContent = '0:00'; $('seek').value = 0;
+    });
+
+    $('seek').addEventListener('input', (e) => {
+      const v = Number(e.target.value) / 1000;
+      seekTo(v);
+    });
+
+    $('masterVol').addEventListener('input', (e) => {
+      ensureAudio(); masterGain.gain.value = Number(e.target.value);
+    });
+
+    // ---------- Boot ----------
+    window.addEventListener('DOMContentLoaded', () => {
+      init3D();
+    });
+  </script>
+</body>
+</html>
