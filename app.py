@@ -34,9 +34,9 @@ def separate():
             # Using the command line interface
             command = [
                 'python3', '-m', 'demucs',
+                '-d', 'cpu',
                 '-n', model,
                 '-o', temp_dir,
-                '--',
                 upload_path
             ]
 

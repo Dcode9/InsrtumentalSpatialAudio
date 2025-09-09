@@ -431,14 +431,20 @@
     }
 
     // ---------- File & API ----------
-    $('file').addEventListener('change', e => fileBlob = e.target.files[0]);
     const drop = $('drop');
+    function handleFileSelect(file) {
+      fileBlob = file;
+      drop.textContent = file.name;
+      drop.style.borderColor = '#334155'; // Reset border
+    }
+
+    $('file').addEventListener('change', e => handleFileSelect(e.target.files[0]));
     drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.style.borderColor = '#6ee7b7'; });
     drop.addEventListener('dragleave', () => drop.style.borderColor = '#334155');
     drop.addEventListener('drop', (e) => {
-      e.preventDefault(); drop.style.borderColor = '#334155';
+      e.preventDefault();
       if (e.dataTransfer.files?.length) {
-        fileBlob = e.dataTransfer.files[0];
+        handleFileSelect(e.dataTransfer.files[0]);
       }
     });
 
